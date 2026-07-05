@@ -86,6 +86,15 @@ function createWindow() {
     },
   });
 
+  // Surface renderer problems in the shell log — invaluable when the window
+  // renders blank/unstyled.
+  win.webContents.on('console-message', (_e, level, message) => {
+    if (level >= 2) console.log(`[renderer:${level}]`, message);
+  });
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.log('[renderer] failed to load', code, desc, url);
+  });
+
   const distIndex = path.join(__dirname, 'dist', 'index.html');
   if (!DEV && fs.existsSync(distIndex)) {
     win.loadFile(distIndex);

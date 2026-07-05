@@ -3,11 +3,11 @@
    red only for error/mute. Boldness lives in the reactor; panels stay
    quiet glass. */
 
-@font-face { font-family: 'Rajdhani'; font-weight: 500; src: url('/fonts/rajdhani-500.woff2') format('woff2'); font-display: swap; }
-@font-face { font-family: 'Rajdhani'; font-weight: 600; src: url('/fonts/rajdhani-600.woff2') format('woff2'); font-display: swap; }
-@font-face { font-family: 'Rajdhani'; font-weight: 700; src: url('/fonts/rajdhani-700.woff2') format('woff2'); font-display: swap; }
-@font-face { font-family: 'Plex Mono'; font-weight: 400; src: url('/fonts/ibmplexmono-400.woff2') format('woff2'); font-display: swap; }
-@font-face { font-family: 'Plex Mono'; font-weight: 500; src: url('/fonts/ibmplexmono-500.woff2') format('woff2'); font-display: swap; }
+@font-face { font-family: 'Rajdhani'; font-weight: 500; src: url('./fonts/rajdhani-500.woff2') format('woff2'); font-display: swap; }
+@font-face { font-family: 'Rajdhani'; font-weight: 600; src: url('./fonts/rajdhani-600.woff2') format('woff2'); font-display: swap; }
+@font-face { font-family: 'Rajdhani'; font-weight: 700; src: url('./fonts/rajdhani-700.woff2') format('woff2'); font-display: swap; }
+@font-face { font-family: 'Plex Mono'; font-weight: 400; src: url('./fonts/ibmplexmono-400.woff2') format('woff2'); font-display: swap; }
+@font-face { font-family: 'Plex Mono'; font-weight: 500; src: url('./fonts/ibmplexmono-500.woff2') format('woff2'); font-display: swap; }
 
 :root {
   --void: #030608;
