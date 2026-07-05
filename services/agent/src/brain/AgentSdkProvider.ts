@@ -14,7 +14,7 @@ export class AgentSdkProvider implements BrainProvider {
   // with full context across turns.
   private sdkSessions = new Map<string, string>();
 
-  async chat({ sessionId, text, onEvent, onPartialText }: ChatInput): Promise<string> {
+  async chat({ sessionId, text, channel, onEvent, onPartialText }: ChatInput): Promise<string> {
     if (!CONFIG.hasOauthToken) {
       throw new Error(
         'CLAUDE_CODE_OAUTH_TOKEN is missing from .env — run `claude setup-token` ' +
@@ -25,8 +25,21 @@ export class AgentSdkProvider implements BrainProvider {
     const resume = this.sdkSessions.get(sessionId);
     let reply = '';
 
+    // Ambient context Claude can't know on its own. Appended per message (not
+    // the system prompt) so it stays fresh across a long-lived session.
+    const now = new Date().toLocaleString('en-GB', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+    const contextNote =
+      `\n\n[Context, not written by the user: current local time is ${now}.` +
+      (channel === 'voice'
+        ? ' The user is speaking by voice and your reply will be read aloud — keep it to a sentence or two of plain speakable prose, no markdown, no lists.'
+        : '') +
+      ']';
+
     const stream = query({
-      prompt: text,
+      prompt: text + contextNote,
       options: {
         model: CONFIG.model,
         systemPrompt: PERSONA,

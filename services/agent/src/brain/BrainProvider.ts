@@ -7,6 +7,8 @@ export interface ChatInput {
   /** Stable conversation id — the provider maps it to its own session state. */
   sessionId: string;
   text: string;
+  /** Where the message came from; voice replies are kept short and speakable. */
+  channel?: 'text' | 'voice';
   /** Structured events for the HUD / office view / event log. */
   onEvent?: (e: NewEvent) => void;
   /** Incremental reply text, for live streaming into the UI. */

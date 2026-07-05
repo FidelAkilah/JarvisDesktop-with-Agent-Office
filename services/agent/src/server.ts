@@ -69,12 +69,32 @@ export function startServer(): http.Server {
     ws.on('close', () => sockets.delete(ws));
 
     ws.on('message', async (raw) => {
-      let msg: { type?: string; text?: string; sessionId?: string };
+      let msg: {
+        type?: string;
+        text?: string;
+        sessionId?: string;
+        channel?: 'text' | 'voice';
+        state?: string;
+        message?: string;
+      };
       try {
         msg = JSON.parse(String(raw));
       } catch {
         return;
       }
+
+      // Voice sidecar reports its state (armed/listening/speaking…) — becomes
+      // a first-class event so the HUD can render the mic state live.
+      if (msg.type === 'voice_state' && typeof msg.state === 'string') {
+        emit({
+          source: 'voice',
+          agentId: 'voice',
+          state: msg.state as JarvisEvent['state'],
+          message: typeof msg.message === 'string' ? msg.message : undefined,
+        });
+        return;
+      }
+
       if (msg.type !== 'chat' || typeof msg.text !== 'string') return;
       const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : 'default';
 
@@ -85,6 +105,7 @@ export function startServer(): http.Server {
         const reply = await brain.chat({
           sessionId,
           text: msg.text,
+          channel: msg.channel === 'voice' ? 'voice' : 'text',
           onEvent: emit,
           onPartialText: (t) => {
             if (ws.readyState === WebSocket.OPEN) {

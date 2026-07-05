@@ -39,6 +39,19 @@ Smoke test from another terminal:
 cd services/agent && npm run test:roundtrip
 ```
 
+### Voice (hands-free)
+
+With the agent service running, in a second terminal:
+
+```bash
+cd services/voice
+./run.sh
+```
+
+First run: macOS asks for microphone access — click **Allow**. Then say
+**"Hey Jarvis, …"** and speak. `Ctrl+C` quits. Options: `./run.sh --no-speak`
+(text only), `./run.sh --input file.wav` (replay a recording, for testing).
+
 ## Repo layout
 
 | Path | What it is |

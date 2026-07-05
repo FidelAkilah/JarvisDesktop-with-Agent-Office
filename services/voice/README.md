@@ -1,13 +1,26 @@
-# JARVIS voice service (Phase 1 — not yet built)
+# JARVIS voice service
 
-Python sidecar for the hands-free loop:
+The hands-free loop, fully local: **openWakeWord** ("hey jarvis", ONNX) →
+adaptive energy-VAD capture → **faster-whisper** STT (`small` by default) →
+agent service over WebSocket → **Piper** TTS (`en_GB-alan-medium`; falls back
+to macOS `say -v Daniel`).
 
-openWakeWord ("hey jarvis") → VAD capture → faster-whisper STT (streaming
-partials) → agent service over WebSocket → Piper TTS (British male voice;
-fallback `say -v Daniel`).
+## Run
 
-Planned stack: uv-managed Python 3.12, RealtimeSTT, openwakeword, piper-tts.
-On this machine (Apple M3) evaluate mlx-whisper / whisper.cpp+CoreML for speed.
-Speaks WebSocket to the UI on port 4778 and to the agent service on 4777.
+```bash
+./run.sh                 # live mic loop (agent service must be running)
+./run.sh --no-speak      # print replies instead of speaking
+./run.sh --input x.wav   # replay a recording as the mic (offline testing)
+./run.sh --once          # exit after one interaction
+```
 
-See `JARVIS VAULT/JARVIS/System/NEXT_STEPS.md` for the Phase 1 plan.
+Managed by [uv](https://docs.astral.sh/uv/) (Python 3.12, `uv sync` to
+install). Settings live in the repo-root `.env`: `JARVIS_WHISPER_MODEL`,
+`JARVIS_TTS_VOICE`, `JARVIS_WAKE_THRESHOLD`, `JARVIS_LANGUAGE`.
+
+Models: openWakeWord downloads into the venv on first run; the Piper voice
+lives in `models/` (re-download with
+`uv run python -m piper.download_voices en_GB-alan-medium --data-dir models`);
+Whisper caches under `~/.cache/huggingface`.
+
+Design notes and the RealtimeSTT deviation: vault `System/DECISIONS.md`.
