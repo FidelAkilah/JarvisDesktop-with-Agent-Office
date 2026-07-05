@@ -78,15 +78,3 @@ class BrainClient:
                 elif kind == "error":
                     raise RuntimeError(msg["message"])
                 # ignore hello / event broadcasts
-
-    def send_state(self, state: str, message: str | None = None) -> None:
-        """Best-effort voice-state events for the HUD; never breaks the loop."""
-        try:
-            with connect(config.AGENT_WS_URL, open_timeout=2) as ws:
-                ws.send(
-                    json.dumps(
-                        {"type": "voice_state", "state": state, "message": message}
-                    )
-                )
-        except Exception:  # noqa: BLE001
-            pass

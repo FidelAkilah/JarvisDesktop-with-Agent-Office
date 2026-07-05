@@ -68,6 +68,12 @@ export function startServer(): http.Server {
     );
     ws.on('close', () => sockets.delete(ws));
 
+    const broadcast = (payload: string) => {
+      for (const client of sockets) {
+        if (client.readyState === WebSocket.OPEN) client.send(payload);
+      }
+    };
+
     ws.on('message', async (raw) => {
       let msg: {
         type?: string;
@@ -76,6 +82,8 @@ export function startServer(): http.Server {
         channel?: 'text' | 'voice';
         state?: string;
         message?: string;
+        cmd?: string;
+        level?: number;
       };
       try {
         msg = JSON.parse(String(raw));
@@ -95,6 +103,22 @@ export function startServer(): http.Server {
         return;
       }
 
+      // High-frequency / transient traffic: mic levels (~12/s) and in-progress
+      // transcripts. Relayed to every client but deliberately NOT written to
+      // the event log.
+      if (msg.type === 'voice_level' || msg.type === 'voice_partial') {
+        broadcast(JSON.stringify(msg));
+        return;
+      }
+
+      // UI → voice sidecar commands (push-to-talk, mute). Relayed to all
+      // clients; the voice service acts on them and answers with voice_state.
+      if (msg.type === 'voice_cmd' && typeof msg.cmd === 'string') {
+        emit({ source: 'ui', message: `voice command: ${msg.cmd}` });
+        broadcast(JSON.stringify({ type: 'voice_cmd', cmd: msg.cmd }));
+        return;
+      }
+
       if (msg.type !== 'chat' || typeof msg.text !== 'string') return;
       const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : 'default';
 
@@ -102,16 +126,16 @@ export function startServer(): http.Server {
       emit({ source: 'orchestrator', agentId: 'jarvis', state: 'thinking' });
 
       try {
+        const channel = msg.channel === 'voice' ? 'voice' : 'text';
         const reply = await brain.chat({
           sessionId,
           text: msg.text,
-          channel: msg.channel === 'voice' ? 'voice' : 'text',
+          channel,
+          // Deltas go to every client so the HUD streams replies live even for
+          // turns initiated by the voice sidecar.
           onEvent: emit,
-          onPartialText: (t) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'assistant_delta', sessionId, text: t }));
-            }
-          },
+          onPartialText: (t) =>
+            broadcast(JSON.stringify({ type: 'assistant_delta', sessionId, text: t })),
         });
         emit({
           source: 'orchestrator',
@@ -122,6 +146,10 @@ export function startServer(): http.Server {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'reply', sessionId, text: reply }));
         }
+        // Full turn for every client's transcript (HUD shows voice turns too).
+        broadcast(
+          JSON.stringify({ type: 'chat_turn', sessionId, channel, text: msg.text, reply }),
+        );
         emit({ source: 'orchestrator', agentId: 'jarvis', state: 'idle' });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

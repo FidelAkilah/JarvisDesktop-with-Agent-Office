@@ -23,34 +23,34 @@ live status: `JARVIS VAULT/JARVIS/System/NEXT_STEPS.md`.
    CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
    ```
 
-## Run it
+## Run it — the app (recommended)
 
 ```bash
-cd services/agent
-npm install        # first time only
-npm run dev        # starts the agent service on http://localhost:4777
+cd apps/desktop
+npm install          # first time only
+npm run app:prod     # builds the HUD and opens the JARVIS window
 ```
 
-Open <http://localhost:4777> in a browser and talk to JARVIS.
+The app starts both services itself (brain + voice), shows the arc-reactor
+HUD, and lives in the menu bar (◉). First run: click **Allow** on the
+microphone prompt. Then say **"Hey Jarvis, …"** — or type in the transcript
+panel.
 
-Smoke test from another terminal:
+Shortcuts: `⌘⇧J` show/hide · `⌘⇧Space` push-to-talk · `⌘⇧M` mute.
+Closing the window keeps JARVIS running in the tray; quit from the ◉ menu.
+
+## Run the pieces separately (dev / debugging)
 
 ```bash
-cd services/agent && npm run test:roundtrip
+cd services/agent && npm run dev     # brain + event hub on :4777
+cd services/voice && ./run.sh        # hands-free voice loop (CLI)
+cd apps/desktop  && npm run dev      # HUD at http://localhost:5173
 ```
 
-### Voice (hands-free)
+Don't run `./run.sh` and the desktop app at the same time — you'd have two
+microphones listening and two voices answering.
 
-With the agent service running, in a second terminal:
-
-```bash
-cd services/voice
-./run.sh
-```
-
-First run: macOS asks for microphone access — click **Allow**. Then say
-**"Hey Jarvis, …"** and speak. `Ctrl+C` quits. Options: `./run.sh --no-speak`
-(text only), `./run.sh --input file.wav` (replay a recording, for testing).
+Smoke test: `cd services/agent && npm run test:roundtrip`.
 
 ## Repo layout
 

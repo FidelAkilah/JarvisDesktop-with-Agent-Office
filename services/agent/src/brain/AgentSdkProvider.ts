@@ -105,7 +105,11 @@ class PersistentSession {
                 source: 'orchestrator',
                 agentId: 'jarvis',
                 state: 'done',
-                data: { costUsd: msg.total_cost_usd, durationMs: msg.duration_ms },
+                data: {
+                  costUsd: msg.total_cost_usd,
+                  durationMs: msg.duration_ms,
+                  usage: msg.usage, // input/output token counts for the HUD gauges
+                },
               });
               done?.resolve(reply);
             } else {

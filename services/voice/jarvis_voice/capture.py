@@ -19,9 +19,16 @@ def capture_utterance(
     max_seconds: float = 15.0,
     trailing_silence: float = 0.9,
     no_speech_timeout: float = 5.0,
+    on_frame=None,
+    on_chunk=None,
+    chunk_interval: float = 1.0,
 ) -> np.ndarray | None:
     """Collect frames until `trailing_silence` seconds of quiet after speech.
-    Returns None if the wake word fired but nobody said anything."""
+    Returns None if the wake word fired but nobody said anything.
+
+    `on_frame(frame)` fires per 80 ms frame (mic-level meter for the HUD);
+    `on_chunk(pcm_so_far)` fires every `chunk_interval` s of speech so a
+    partial transcript can stream in while the user is still talking."""
     threshold = max(ambient_rms * 2.5, 250.0)
     frame_s = config.FRAME_SAMPLES / config.SAMPLE_RATE
 
@@ -29,15 +36,23 @@ def capture_utterance(
     heard_speech = False
     silence_s = 0.0
     total_s = 0.0
+    since_chunk = 0.0
 
     for frame in frames:
         collected.append(frame)
         total_s += frame_s
+        since_chunk += frame_s
+        if on_frame:
+            on_frame(frame)
         if rms(frame) >= threshold:
             heard_speech = True
             silence_s = 0.0
         else:
             silence_s += frame_s
+
+        if heard_speech and on_chunk and since_chunk >= chunk_interval:
+            since_chunk = 0.0
+            on_chunk(np.concatenate(collected))
 
         if heard_speech and silence_s >= trailing_silence:
             break
