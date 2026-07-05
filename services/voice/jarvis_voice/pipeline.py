@@ -1,6 +1,10 @@
 """The hands-free loop: armed → wake → capture → transcribe → think → speak →
-armed. Per-stage timings are printed after every interaction."""
+armed. Replies are spoken sentence-by-sentence as they stream from the brain,
+so JARVIS starts talking before the full answer exists. Per-stage timings are
+printed after every interaction."""
 
+import queue
+import threading
 import time
 from collections import deque
 
@@ -64,24 +68,47 @@ def run(source=None, speak_replies: bool = True, once: bool = False):
 
                 print(f"[you]    {text}")
                 brain.send_state("thinking", text)
+
+                # Speak sentences on a worker thread as they stream in.
+                sentences: queue.Queue[str | None] = queue.Queue()
+                first_audio_at: list[float | None] = [None]
+
+                def speak_worker() -> None:
+                    while True:
+                        sentence = sentences.get()
+                        if sentence is None:
+                            return
+                        t_s = time.perf_counter()
+                        timings = speaker.speak(sentence)
+                        if first_audio_at[0] is None:
+                            first_audio_at[0] = t_s + timings["synth"]
+
+                worker = threading.Thread(target=speak_worker, daemon=True)
+                worker.start()
+                on_sentence = sentences.put if speak_replies else None
                 try:
-                    reply = brain.chat(text)
+                    reply = brain.chat(text, on_sentence=on_sentence)
                 except Exception as e:  # noqa: BLE001
                     reply = f"Sorry, I hit a problem talking to my brain: {e}"
-                t_brain = time.perf_counter()
-
+                    if speak_replies:
+                        sentences.put(reply)
+                t_reply_done = time.perf_counter()
                 print(f"[jarvis] {reply}")
                 brain.send_state("speaking", reply[:120])
-                tts = speaker.speak(reply) if speak_replies else {"synth": 0.0, "play": 0.0}
+                sentences.put(None)
+                worker.join()
+                t_all_spoken = time.perf_counter()
 
                 stt_s = t_stt - t_captured
-                brain_s = t_brain - t_stt
-                to_voice = stt_s + brain_s + tts["synth"]
+                first_voice = (first_audio_at[0] or t_all_spoken) - t_captured
                 print(
-                    "[timing] stt={:.2f}s · brain={:.2f}s · tts={:.2f}s │ "
+                    "[timing] stt={:.2f}s · reply-complete={:.2f}s │ "
                     "end-of-speech → JARVIS starts speaking: {:.2f}s "
-                    "(then {:.1f}s of audio)".format(
-                        stt_s, brain_s, tts["synth"], to_voice, tts["play"]
+                    "(finished speaking at {:.1f}s)".format(
+                        stt_s,
+                        t_reply_done - t_captured,
+                        first_voice,
+                        t_all_spoken - t_captured,
                     )
                 )
 

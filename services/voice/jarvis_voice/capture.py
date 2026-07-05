@@ -17,7 +17,7 @@ def capture_utterance(
     frames: Iterator[np.ndarray],
     ambient_rms: float,
     max_seconds: float = 15.0,
-    trailing_silence: float = 1.2,
+    trailing_silence: float = 0.9,
     no_speech_timeout: float = 5.0,
 ) -> np.ndarray | None:
     """Collect frames until `trailing_silence` seconds of quiet after speech.

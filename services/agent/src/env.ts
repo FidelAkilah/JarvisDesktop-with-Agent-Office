@@ -8,17 +8,14 @@ export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 config({ path: path.join(REPO_ROOT, '.env') });
 
 // The Agent SDK's credential precedence puts ANTHROPIC_API_KEY and
-// ANTHROPIC_AUTH_TOKEN above the subscription token, and ANTHROPIC_BASE_URL /
-// CLAUDE_CODE_* leak in when this service is launched from inside another
-// Claude Code session. Scrub them all so JARVIS always authenticates with the
-// Max-subscription CLAUDE_CODE_OAUTH_TOKEN from .env — never API-key billing.
+// ANTHROPIC_AUTH_TOKEN above the subscription token, and CLAUDE* vars leak in
+// when this service is launched from inside another Claude Code session
+// (e.g. CLAUDE_EFFORT=xhigh, which massively slows replies). Scrub everything
+// Anthropic/Claude-shaped so JARVIS behaves identically no matter what shell
+// launched it, then re-inject only its own subscription token from .env.
 const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 for (const key of Object.keys(process.env)) {
-  if (
-    key.startsWith('ANTHROPIC_') ||
-    key.startsWith('CLAUDE_CODE_') ||
-    key === 'CLAUDECODE'
-  ) {
+  if (key.startsWith('ANTHROPIC_') || key.startsWith('CLAUDE')) {
     delete process.env[key];
   }
 }

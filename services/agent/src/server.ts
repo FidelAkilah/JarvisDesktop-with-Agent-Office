@@ -138,6 +138,8 @@ export function startServer(): http.Server {
       `[jarvis-agentd] http://127.0.0.1:${CONFIG.port} · brain=${brain.name} · ` +
         `model=${CONFIG.model} · token=${CONFIG.hasOauthToken ? 'present' : 'MISSING (run: claude setup-token)'}`,
     );
+    // Pre-spawn the voice session so the first spoken question pays no boot cost.
+    (brain as { warm?: (id: string) => void }).warm?.('voice');
   });
 
   return server;
