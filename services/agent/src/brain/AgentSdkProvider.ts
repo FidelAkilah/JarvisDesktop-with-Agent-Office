@@ -1,12 +1,112 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { CONFIG } from '../env.js';
+import { CONFIG, REPO_ROOT } from '../env.js';
 import type { BrainProvider, ChatInput } from './BrainProvider.js';
-import type { NewEvent } from '../events.js';
+import type { Activity, NewEvent } from '../events.js';
 
-const PERSONA = `You are JARVIS, Fidel's personal AI assistant — capable, warm, and
-lightly witty in the manner of a trusted butler. You run inside the JARVIS desktop
-app on his Mac. Answer conversational questions directly and concisely (a sentence
-or two unless more is genuinely needed). Do not narrate your reasoning.`;
+/* ── personas live in the vault (JARVIS/Agents/*.md) — editing a note
+      changes the agent on the next session spawn ─────────────────────── */
+
+const FALLBACK_ORCHESTRATOR = `You are JARVIS, Fidel's personal AI assistant —
+capable, warm, lightly witty. Use your tools to do real work; confirm what you
+did afterwards. Delegate to researcher / coder / vault-librarian via the Agent
+tool when useful.`;
+
+function loadAgentNote(name: string, fallback: string): string {
+  try {
+    const text = fs
+      .readFileSync(path.join(CONFIG.vaultPath, 'Agents', `${name}.md`), 'utf8')
+      .replace(/^#.*\n/, '')
+      .replace(/\*[^*]*agent service[^*]*\*/s, '') // strip the "live persona" note-to-humans
+      .trim();
+    if (text) return text;
+  } catch {
+    /* note missing — fallback below */
+  }
+  return fallback;
+}
+
+/* ── operational context appended to the persona ─────────────────────── */
+
+function operationalCore(): string {
+  return `
+
+Operational context (from the JARVIS runtime, not editable prose):
+- Repo root: ${REPO_ROOT}
+- Obsidian vault (your memory — the ONLY vault area you may write): ${CONFIG.vaultPath}
+  Folders: Memory/ (durable facts), Tasks/, Context/, Daily/, Agents/, System/.
+- Personal notes elsewhere in the vault and the repo .env file are protected;
+  writes there will be denied by the runtime.
+- The user often speaks by voice; when the message says so, keep replies short
+  and speakable.`;
+}
+
+/* ── tool → activity mapping (drives the HUD + pixel office) ─────────── */
+
+function describeTool(name: string, input: any): { activity?: Activity; target?: string } {
+  const raw = String(
+    input?.file_path ?? input?.path ?? input?.command ?? input?.pattern ?? input?.url ?? input?.query ?? '',
+  );
+  const target = raw.length > 90 ? raw.slice(0, 87) + '…' : raw || undefined;
+  const inVault = raw.includes('JARVIS VAULT');
+  switch (name) {
+    case 'Write':
+    case 'Edit':
+    case 'MultiEdit':
+    case 'NotebookEdit':
+      return { activity: inVault ? 'vault_write' : 'typing', target };
+    case 'Read':
+    case 'Glob':
+    case 'Grep':
+      return { activity: inVault ? 'vault_read' : 'typing', target };
+    case 'Bash':
+    case 'BashOutput':
+    case 'KillShell':
+      return { activity: 'terminal', target };
+    case 'WebSearch':
+    case 'WebFetch':
+      return { activity: 'research', target };
+    default:
+      return { target };
+  }
+}
+
+/* ── safety guard: JARVIS acts freely EXCEPT where it must never ─────── */
+
+const VAULT_ROOT = path.dirname(CONFIG.vaultPath); // ".../JARVIS VAULT"
+
+function guardTool(
+  toolName: string,
+  input: Record<string, unknown>,
+): { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string } {
+  const target = String(input?.file_path ?? input?.path ?? '');
+  if (target) {
+    const p = path.resolve(REPO_ROOT, target);
+    const writes = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(toolName);
+    if (writes && p.startsWith(VAULT_ROOT + path.sep) && !p.startsWith(CONFIG.vaultPath + path.sep)) {
+      return {
+        behavior: 'deny',
+        message: `Personal vault notes outside ${CONFIG.vaultPath} are protected — JARVIS only writes inside its own folder.`,
+      };
+    }
+    if (writes && path.basename(p) === '.env') {
+      return { behavior: 'deny', message: '.env holds secrets and is protected.' };
+    }
+  }
+  if (toolName === 'Bash') {
+    const cmd = String(input?.command ?? '');
+    if (/\bsudo\b/.test(cmd)) {
+      return { behavior: 'deny', message: 'sudo is not permitted.' };
+    }
+    if (/rm\s+(-[a-zA-Z]*\s+)*(\/|~\/?)(\s|$)/.test(cmd)) {
+      return { behavior: 'deny', message: 'Refusing to delete from the filesystem root or home directory.' };
+    }
+  }
+  return { behavior: 'allow', updatedInput: input };
+}
+
+/* ── persistent streaming session ─────────────────────────────────────── */
 
 interface Pending {
   resolve: (reply: string) => void;
@@ -15,18 +115,13 @@ interface Pending {
   onPartialText?: (text: string) => void;
 }
 
-/**
- * One long-lived Agent SDK session (streaming input mode). The CLI subprocess
- * spawns once and stays warm, so per-turn latency is inference only — this is
- * what got voice latency out of the 5–10 s range. Messages queue and process
- * sequentially; each turn ends with a `result` message that resolves the
- * matching pending promise (FIFO).
- */
 class PersistentSession {
   private inputQueue: (SDKUserMessage | null)[] = [];
   private inputWaiter: (() => void) | null = null;
   private pending: Pending[] = [];
   private replyBuffer = '';
+  /** tool_use id of an Agent dispatch → subagent name, for event attribution */
+  private subagentCalls = new Map<string, string>();
   dead = false;
   lastUsed = Date.now();
 
@@ -35,10 +130,33 @@ class PersistentSession {
       prompt: this.inputStream(),
       options: {
         model: CONFIG.model,
-        systemPrompt: PERSONA,
-        // Phase 0/1 is chat-only; Phase 3 adds tools + a permission handler.
-        allowedTools: [],
+        cwd: REPO_ROOT,
+        systemPrompt: loadAgentNote('orchestrator', FALLBACK_ORCHESTRATOR) + operationalCore(),
         includePartialMessages: true,
+        // Reads and research are auto-approved; writes/bash go through guardTool.
+        allowedTools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Agent', 'TodoWrite'],
+        canUseTool: async (toolName: string, input: Record<string, unknown>) =>
+          guardTool(toolName, input),
+        agents: {
+          researcher: {
+            description:
+              'Web research specialist — investigates questions online and reports verified findings with sources.',
+            prompt: loadAgentNote('researcher', 'You research questions on the web and report verified findings with sources.'),
+            tools: ['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep'],
+          },
+          coder: {
+            description:
+              'Software specialist — writes, edits, and runs code and shell commands, verifying results.',
+            prompt: loadAgentNote('coder', 'You write, edit and run code in small verified steps.'),
+            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
+          },
+          'vault-librarian': {
+            description:
+              "Keeper of the Obsidian vault — reads, writes, and organises notes inside the vault's JARVIS folder only.",
+            prompt: loadAgentNote('vault-librarian', 'You manage the Obsidian vault, writing only inside the JARVIS folder.'),
+            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+          },
+        },
       },
     });
     void this.pump(stream);
@@ -77,22 +195,75 @@ class PersistentSession {
               });
             }
             break;
+
           case 'stream_event': {
             const ev = msg.event;
-            if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+            if (
+              ev?.type === 'content_block_delta' &&
+              ev.delta?.type === 'text_delta' &&
+              !msg.parent_tool_use_id // only the orchestrator's own prose streams to the UI
+            ) {
               current?.onPartialText?.(ev.delta.text as string);
             }
             break;
           }
+
           case 'assistant': {
+            const parentId = msg.parent_tool_use_id as string | null;
+            const agentId = parentId ? (this.subagentCalls.get(parentId) ?? 'agent') : 'jarvis';
             const blocks: any[] = msg.message?.content ?? [];
-            const text = blocks
-              .filter((b) => b?.type === 'text')
-              .map((b) => b.text as string)
-              .join('');
-            if (text) this.replyBuffer = text;
+            for (const b of blocks) {
+              if (b?.type === 'text') {
+                if (!parentId && b.text) this.replyBuffer = b.text;
+              } else if (b?.type === 'tool_use') {
+                if ((b.name === 'Agent' || b.name === 'Task') && b.input?.subagent_type) {
+                  const sub = String(b.input.subagent_type);
+                  this.subagentCalls.set(b.id, sub);
+                  current?.onEvent?.({
+                    source: 'orchestrator',
+                    agentId: 'jarvis',
+                    state: 'working',
+                    tool: 'Agent',
+                    target: sub,
+                    message: String(b.input.description ?? b.input.prompt ?? '').slice(0, 120),
+                  });
+                  current?.onEvent?.({
+                    source: 'agent',
+                    agentId: sub,
+                    state: 'thinking',
+                    message: String(b.input.description ?? '').slice(0, 120),
+                  });
+                } else {
+                  const { activity, target } = describeTool(b.name, b.input);
+                  current?.onEvent?.({
+                    source: parentId ? 'agent' : 'orchestrator',
+                    agentId,
+                    state: 'working',
+                    activity,
+                    tool: b.name,
+                    target,
+                  });
+                }
+              }
+            }
             break;
           }
+
+          case 'user': {
+            // subagent finished when its Agent tool_result comes back
+            const blocks = msg.message?.content;
+            if (Array.isArray(blocks)) {
+              for (const b of blocks) {
+                if (b?.type === 'tool_result' && this.subagentCalls.has(b.tool_use_id)) {
+                  const sub = this.subagentCalls.get(b.tool_use_id)!;
+                  this.subagentCalls.delete(b.tool_use_id);
+                  current?.onEvent?.({ source: 'agent', agentId: sub, state: 'done' });
+                }
+              }
+            }
+            break;
+          }
+
           case 'result': {
             const done = this.pending.shift();
             const reply =
@@ -108,7 +279,8 @@ class PersistentSession {
                 data: {
                   costUsd: msg.total_cost_usd,
                   durationMs: msg.duration_ms,
-                  usage: msg.usage, // input/output token counts for the HUD gauges
+                  turns: msg.num_turns,
+                  usage: msg.usage,
                 },
               });
               done?.resolve(reply);
@@ -148,7 +320,8 @@ class PersistentSession {
   }
 }
 
-// Sessions that stay warm forever; everything else is reaped after idling.
+/* ── provider ─────────────────────────────────────────────────────────── */
+
 const KEEP_WARM = new Set(['voice', 'default']);
 const IDLE_LIMIT_MS = 10 * 60 * 1000;
 
@@ -160,7 +333,6 @@ export class AgentSdkProvider implements BrainProvider {
     setInterval(() => this.reapIdle(), 60_000).unref();
   }
 
-  /** Spawn a session ahead of time so the first question pays no boot cost. */
   warm(sessionId: string): void {
     if (CONFIG.hasOauthToken) this.session(sessionId);
   }
@@ -192,8 +364,6 @@ export class AgentSdkProvider implements BrainProvider {
       );
     }
 
-    // Ambient context Claude can't know on its own; appended per message so it
-    // stays fresh across the long-lived session.
     const now = new Date().toLocaleString('en-GB', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
       hour: '2-digit', minute: '2-digit',
@@ -201,14 +371,13 @@ export class AgentSdkProvider implements BrainProvider {
     const contextNote =
       `\n\n[Context, not written by the user: current local time is ${now}.` +
       (channel === 'voice'
-        ? ' The user is speaking by voice and your reply will be read aloud — keep it to a sentence or two of plain speakable prose, no markdown, no lists.'
+        ? ' The user is speaking by voice and your reply will be read aloud — keep it to a sentence or two of plain speakable prose, no markdown, no lists. If you used tools, briefly confirm what you actually did.'
         : '') +
       ']';
 
     try {
       return await this.session(sessionId).chat(text + contextNote, { onEvent, onPartialText });
     } catch (err) {
-      // Session died mid-turn (CLI crash etc.) — retry once on a fresh one.
       this.sessions.delete(sessionId);
       onEvent?.({
         source: 'system',

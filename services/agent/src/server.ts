@@ -11,6 +11,32 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const DATA_DIR = path.join(REPO_ROOT, 'data');
 
+/** Turns that did real work get a human-readable note in the vault
+ * (JARVIS/Tasks/YYYY-MM-DD Tasks.md) so history is browsable in Obsidian. */
+function logTaskToVault(userText: string, reply: string, events: JarvisEvent[]): void {
+  const actions = events.filter((e) => e.tool);
+  if (actions.length === 0) return;
+  try {
+    const dir = path.join(CONFIG.vaultPath, 'Tasks');
+    fs.mkdirSync(dir, { recursive: true });
+    const d = new Date();
+    // local date, not UTC — a task at 00:30 belongs to today, not yesterday
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const file = path.join(dir, `${day} Tasks.md`);
+    const header = fs.existsSync(file) ? '' : `# Tasks — ${day}\n`;
+    const lines = actions
+      .map((e) => `    - ${e.agentId ?? e.source}: ${e.tool}${e.target ? ` → ${e.target}` : ''}`)
+      .join('\n');
+    const entry =
+      `\n## ${d.toTimeString().slice(0, 5)} — ${userText.slice(0, 80).replace(/\n/g, ' ')}\n` +
+      `- **Request:** ${userText.replace(/\n/g, ' ')}\n- **Actions:**\n${lines}\n` +
+      `- **Result:** ${reply.slice(0, 400).replace(/\n/g, ' ')}\n`;
+    fs.appendFileSync(file, header + entry);
+  } catch {
+    /* task notes are best-effort — never break a turn over them */
+  }
+}
+
 export function startServer(): http.Server {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const eventLog = fs.createWriteStream(path.join(DATA_DIR, 'events.jsonl'), {
@@ -127,16 +153,18 @@ export function startServer(): http.Server {
 
       try {
         const channel = msg.channel === 'voice' ? 'voice' : 'text';
+        const turnEvents: JarvisEvent[] = [];
         const reply = await brain.chat({
           sessionId,
           text: msg.text,
           channel,
           // Deltas go to every client so the HUD streams replies live even for
           // turns initiated by the voice sidecar.
-          onEvent: emit,
+          onEvent: (e) => turnEvents.push(emit(e)),
           onPartialText: (t) =>
             broadcast(JSON.stringify({ type: 'assistant_delta', sessionId, text: t })),
         });
+        logTaskToVault(msg.text, reply, turnEvents);
         emit({
           source: 'orchestrator',
           agentId: 'jarvis',
