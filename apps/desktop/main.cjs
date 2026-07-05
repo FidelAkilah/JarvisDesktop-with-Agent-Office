@@ -26,6 +26,16 @@ let tray = null;
 let quitting = false;
 const children = [];
 
+// Only one JARVIS. A second launch focuses the existing window instead of
+// spawning a second app (and a second microphone).
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+app.on('second-instance', () => {
+  win?.show();
+  win?.focus();
+});
+
 // ── sidecars ─────────────────────────────────────────────────────────
 function agentHealthy(cb) {
   http
