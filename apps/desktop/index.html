@@ -10,6 +10,10 @@
   <div id="app">
     <header id="hdr">
       <div class="wordmark">J.A.R.V.I.S</div>
+      <div id="viewToggle">
+        <button class="vbtn active" data-view="core">CORE</button>
+        <button class="vbtn" data-view="office">OFFICE</button>
+      </div>
       <div class="hdr-status"><span id="linkDot" class="dot"></span><span id="hdrText">establishing link…</span></div>
       <div class="hdr-right">
         <button id="pttBtn" class="hbtn" title="Push to talk (⌘⇧Space)">TALK</button>
@@ -34,10 +38,12 @@
 
     <main id="core">
       <canvas id="reactor"></canvas>
+      <div id="officeMount"></div>
       <div id="coreText">
         <div id="stateLabel">OFFLINE</div>
         <div id="stateSub">waiting for link</div>
       </div>
+      <div id="agentDetail" hidden></div>
     </main>
 
     <aside id="comms" class="panel">

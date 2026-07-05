@@ -1,6 +1,7 @@
 /** HUD logic — a pure function of the agent-service event stream. */
 
 import { Reactor, type CoreState } from './reactor';
+import { Office } from './office/office';
 
 declare global {
   interface Window {
@@ -39,6 +40,58 @@ agents.set('jarvis', { state: 'idle', msg: 'orchestrator', ts: 0 });
 
 const totals = { tokens: 0, turns: 0, cost: 0, lastLatency: 0 };
 
+// per-agent event history (feeds the click-to-inspect dossier)
+const agentHistory = new Map<string, Record<string, any>[]>();
+let selectedAgent: string | null = null;
+
+/* ── pixel office ─────────────────────────────────────────────────────── */
+const office = new Office((agentId) => {
+  selectedAgent = agentId;
+  renderDetail();
+  $('agentDetail').hidden = false;
+});
+
+function renderDetail(): void {
+  if (!selectedAgent) return;
+  const info = agents.get(selectedAgent);
+  const rows = (agentHistory.get(selectedAgent) ?? [])
+    .slice(-12)
+    .reverse()
+    .map((e) => {
+      const time = new Date(e.ts).toLocaleTimeString('en-GB', { hour12: false });
+      const body =
+        [e.state, e.activity, e.tool && `${e.tool}${e.target ? ' → ' + e.target : ''}`, e.message]
+          .filter(Boolean)
+          .join(' · ');
+      return `<div class="row"><span class="t">${time}</span><span class="b">${escapeHtml(body)}</span></div>`;
+    })
+    .join('');
+  $('agentDetail').innerHTML =
+    `<div class="d-head"><span class="d-name">${escapeHtml(selectedAgent)}</span>` +
+    `<button class="d-close" id="dClose">✕</button></div>` +
+    `<div class="d-state">status: <span class="st-${info?.state ?? ''}">${info?.state ?? '—'}</span>` +
+    `${info?.msg ? ' · ' + escapeHtml(info.msg) : ''}</div>` +
+    `<div class="d-log">${rows || '<div class="row"><span class="b">no activity yet</span></div>'}</div>`;
+  document.getElementById('dClose')?.addEventListener('click', () => {
+    selectedAgent = null;
+    $('agentDetail').hidden = true;
+  });
+}
+
+/* ── view toggle (CORE ⟷ OFFICE) ─────────────────────────────────────── */
+async function setView(view: 'core' | 'office'): Promise<void> {
+  document.body.classList.toggle('view-office', view === 'office');
+  document.querySelectorAll('.vbtn').forEach((b) =>
+    b.classList.toggle('active', (b as HTMLElement).dataset.view === view),
+  );
+  localStorage.setItem('jarvis-view', view);
+  if (view === 'office') await office.mount($('officeMount'));
+}
+document.querySelectorAll('.vbtn').forEach((b) =>
+  b.addEventListener('click', () => setView((b as HTMLElement).dataset.view as 'core' | 'office')),
+);
+if (localStorage.getItem('jarvis-view') === 'office') void setView('office');
+
 // ── core state resolution (precedence encodes what matters most) ─────
 function computeState(): { s: CoreState; sub: string } {
   if (!linkUp) return { s: 'offline', sub: 'agent service unreachable — is it running?' };
@@ -53,6 +106,7 @@ function computeState(): { s: CoreState; sub: string } {
 function render(): void {
   const { s, sub } = computeState();
   reactor.state = s;
+  office.setCoreMood(s === 'thinking' ? 'thinking' : s === 'muted' ? 'muted' : 'normal');
   stateLabel.textContent = s.toUpperCase();
   stateLabel.className =
     s === 'thinking' ? 'gold' : s === 'muted' ? 'red' : s === 'offline' || s === 'standby' ? 'dim' : '';
@@ -148,9 +202,16 @@ function handleEvent(ev: Record<string, any>): void {
       msg: ev.message ?? '',
       ts: Date.now(),
     });
+    const hist = agentHistory.get(ev.agentId) ?? [];
+    hist.push(ev);
+    if (hist.length > 30) hist.shift();
+    agentHistory.set(ev.agentId, hist);
+    office.handleEvent(ev as any);
+    if (selectedAgent === ev.agentId) renderDetail();
   }
 
   if (ev.source === 'voice') {
+    if (typeof ev.state === 'string') office.setVoiceState(ev.state);
     if (ev.state === 'idle') voiceState = ev.message === 'off' ? 'off' : 'armed';
     else if (ev.state === 'listening') { voiceState = 'listening'; lastSub = ''; }
     else if (ev.state === 'talking') voiceState = 'talking';
@@ -253,5 +314,15 @@ pttBtn.addEventListener('click', () => send({ type: 'voice_cmd', cmd: 'ptt' }));
 window.jarvis?.onCommand((cmd) => {
   if (cmd === 'ptt' || cmd === 'toggle_mute') send({ type: 'voice_cmd', cmd });
 });
+
+// Debug hooks: inject a synthetic event exactly as if it came off the wire,
+// or open an agent dossier (used by offline tests; local display only).
+(window as any).__jarvisTestEvent = (ev: Record<string, any>) =>
+  handleEvent({ id: 0, ts: new Date().toISOString(), ...ev });
+(window as any).__jarvisOpenDetail = (agentId: string) => {
+  selectedAgent = agentId;
+  renderDetail();
+  $('agentDetail').hidden = false;
+};
 
 render();
