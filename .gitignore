@@ -1,0 +1,19 @@
+# Secrets — never commit
+.env
+
+# The Obsidian vault is personal data, not source code
+JARVIS VAULT/
+
+# Runtime state (event logs, SQLite)
+data/
+
+# Dependencies & build output
+node_modules/
+dist/
+.venv/
+__pycache__/
+
+# OS / editor noise
+.DS_Store
+*.log
+.claude/
