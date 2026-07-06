@@ -41,18 +41,99 @@ capable, warm, lightly witty. Use your tools to do real work; confirm what you
 did afterwards. Delegate to researcher / coder / vault-librarian via the Agent
 tool when useful.`;
 
+function cleanNoteBody(text: string): string {
+  return text
+    .replace(/^#.*\n/, '')
+    .replace(/\*[^*]*agent service[^*]*\*/s, '') // strip the "live persona" note-to-humans
+    .trim();
+}
+
+/** minimal frontmatter parser: --- key: value ... --- */
+function parseNote(raw: string): { meta: Record<string, string>; body: string } {
+  const meta: Record<string, string> = {};
+  let body = raw;
+  if (raw.startsWith('---\n')) {
+    const end = raw.indexOf('\n---', 4);
+    if (end > 0) {
+      for (const line of raw.slice(4, end).split('\n')) {
+        const m = /^(\w[\w-]*):\s*(.+)$/.exec(line.trim());
+        if (m) meta[m[1].toLowerCase()] = m[2].trim();
+      }
+      body = raw.slice(end + 4);
+    }
+  }
+  return { meta, body };
+}
+
 function loadAgentNote(name: string, fallback: string): string {
   try {
-    const text = fs
-      .readFileSync(path.join(CONFIG.vaultPath, 'Agents', `${name}.md`), 'utf8')
-      .replace(/^#.*\n/, '')
-      .replace(/\*[^*]*agent service[^*]*\*/s, '') // strip the "live persona" note-to-humans
-      .trim();
+    const raw = fs.readFileSync(path.join(CONFIG.vaultPath, 'Agents', `${name}.md`), 'utf8');
+    const text = cleanNoteBody(parseNote(raw).body);
     if (text) return text;
   } catch {
     /* note missing — fallback below */
   }
   return fallback;
+}
+
+/* ── the roster lives in the vault: one note per agent under Agents/.
+      Frontmatter: description (when JARVIS delegates to it) and tools.
+      New agents need no code — write a note, restart JARVIS. ───────────── */
+
+interface AgentDef {
+  description: string;
+  prompt: string;
+  tools: string[];
+}
+
+const SAFE_DEFAULT_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'mcp__vault__vault_search'];
+
+const BUILTIN_AGENTS: Record<string, { description: string; tools: string[]; fallback: string }> = {
+  researcher: {
+    description:
+      'Web research specialist — investigates questions online and reports verified findings with sources.',
+    tools: ['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep', 'mcp__vault__vault_search'],
+    fallback: 'You research questions on the web and report verified findings with sources.',
+  },
+  coder: {
+    description:
+      'Software specialist — writes, edits, and runs code and shell commands, verifying results.',
+    tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__vault__vault_search'],
+    fallback: 'You write, edit and run code in small verified steps.',
+  },
+  'vault-librarian': {
+    description:
+      "Keeper of the Obsidian vault — reads, writes, and organises notes inside the vault's JARVIS folder only.",
+    tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'mcp__vault__vault_search'],
+    fallback: 'You manage the Obsidian vault, writing only inside the JARVIS folder.',
+  },
+};
+
+function loadRoster(): Record<string, AgentDef> {
+  const roster: Record<string, AgentDef> = {};
+  for (const [name, b] of Object.entries(BUILTIN_AGENTS)) {
+    roster[name] = { description: b.description, tools: b.tools, prompt: b.fallback };
+  }
+  try {
+    const dir = path.join(CONFIG.vaultPath, 'Agents');
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.md')) continue;
+      const name = f.slice(0, -3);
+      // orchestrator is the main persona; _files and "About…" are docs
+      if (name === 'orchestrator' || name.startsWith('_') || /^about/i.test(name)) continue;
+      const { meta, body } = parseNote(fs.readFileSync(path.join(dir, f), 'utf8'));
+      const prompt = cleanNoteBody(body) || roster[name]?.prompt || `You are the ${name} specialist.`;
+      const tools = meta.tools
+        ? meta.tools.split(',').map((s) => s.trim()).filter(Boolean)
+        : roster[name]?.tools ?? SAFE_DEFAULT_TOOLS;
+      const description =
+        meta.description ?? roster[name]?.description ?? `${name.replace(/-/g, ' ')} specialist.`;
+      roster[name] = { description, prompt, tools };
+    }
+  } catch {
+    /* Agents folder missing — builtins only */
+  }
+  return roster;
 }
 
 /* ── operational context appended to the persona ─────────────────────── */
@@ -178,26 +259,8 @@ class PersistentSession {
         ],
         canUseTool: async (toolName: string, input: Record<string, unknown>) =>
           guardTool(toolName, input),
-        agents: {
-          researcher: {
-            description:
-              'Web research specialist — investigates questions online and reports verified findings with sources.',
-            prompt: loadAgentNote('researcher', 'You research questions on the web and report verified findings with sources.'),
-            tools: ['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep', 'mcp__vault__vault_search'],
-          },
-          coder: {
-            description:
-              'Software specialist — writes, edits, and runs code and shell commands, verifying results.',
-            prompt: loadAgentNote('coder', 'You write, edit and run code in small verified steps.'),
-            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__vault__vault_search'],
-          },
-          'vault-librarian': {
-            description:
-              "Keeper of the Obsidian vault — reads, writes, and organises notes inside the vault's JARVIS folder only.",
-            prompt: loadAgentNote('vault-librarian', 'You manage the Obsidian vault, writing only inside the JARVIS folder.'),
-            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'mcp__vault__vault_search'],
-          },
-        },
+        // the whole roster comes from vault Agents/*.md — new agents need no code
+        agents: loadRoster(),
       },
     });
     void this.pump(stream);
