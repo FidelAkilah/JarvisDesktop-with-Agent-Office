@@ -4,7 +4,8 @@
  * function of the real event stream. Map data: data/map.json (regenerate via
  * scripts/build-office-map.mjs). */
 
-import { Application, Assets, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import 'pixi.js/unsafe-eval'; // strict-CSP support — Pixi otherwise needs eval
+import { Application, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
 import { AgentActor } from './actors';
 import { loadRigs, type Rig } from './rigs';
 import { FURNITURE, tex } from './pixels';
@@ -38,6 +39,21 @@ interface OfficeEvent {
 
 const pxOf = (tx: number, ty: number) => ({ x: (tx + 0.5) * TILE, y: (ty + 0.95) * TILE });
 
+/** Image-element loading works on both http (dev) and file:// (packaged app)
+ * — Pixi's Assets.load uses fetch, which Chromium forbids for file: URLs. */
+function loadImageTexture(url: string): Promise<Texture> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const t = Texture.from(img);
+      t.source.scaleMode = 'nearest';
+      resolve(t);
+    };
+    img.onerror = () => reject(new Error(`failed to load ${url}`));
+    img.src = url;
+  });
+}
+
 export class Office {
   private app: Application | null = null;
   private world = new Container();
@@ -69,14 +85,16 @@ export class Office {
 
     // load sheets + rigs in parallel
     const [sheetTextures, rigs] = await Promise.all([
-      Promise.all(TILESET_DEFS.map((t) => Assets.load<Texture>(t.url))),
+      Promise.all(TILESET_DEFS.map((t) => loadImageTexture(t.url))),
       loadRigs(),
     ]);
     this.rigs = rigs;
-    this.sheets = TILESET_DEFS.map((t, i) => {
-      sheetTextures[i].source.scaleMode = 'nearest';
-      return { first: t.first, count: t.count, columns: t.columns, texture: sheetTextures[i] };
-    });
+    this.sheets = TILESET_DEFS.map((t, i) => ({
+      first: t.first,
+      count: t.count,
+      columns: t.columns,
+      texture: sheetTextures[i],
+    }));
 
     this.world.sortableChildren = true;
     app.stage.addChild(this.world);

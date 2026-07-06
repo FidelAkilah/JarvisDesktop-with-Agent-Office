@@ -96,7 +96,14 @@ async function setView(view: 'core' | 'office'): Promise<void> {
     b.classList.toggle('active', (b as HTMLElement).dataset.view === view),
   );
   localStorage.setItem('jarvis-view', view);
-  if (view === 'office') await office.mount($('officeMount'));
+  if (view === 'office') {
+    try {
+      await office.mount($('officeMount'));
+    } catch (err) {
+      console.error('[office] mount failed:', err);
+      stateSub.textContent = `office failed to load: ${err instanceof Error ? err.message : err}`;
+    }
+  }
 }
 document.querySelectorAll('.vbtn').forEach((b) =>
   b.addEventListener('click', () => setView((b as HTMLElement).dataset.view as 'core' | 'office')),
