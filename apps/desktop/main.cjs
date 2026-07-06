@@ -37,6 +37,31 @@ const AGENT_PORT = 4777;
 
 const SETTING_KEYS = ['JARVIS_MODEL', 'JARVIS_WHISPER_MODEL', 'JARVIS_TTS_VOICE', 'JARVIS_WAKE_THRESHOLD'];
 
+/* ── crash-proof logging ──────────────────────────────────────────────
+ * macOS fast-user-switching can close stdout/child pipes mid-write; a bare
+ * console.log or stream.pipe then throws ERR_STREAM_WRITE_AFTER_END and an
+ * uncaught exception kills the whole shell. An always-on assistant never
+ * dies to a broken pipe. */
+function safeAppend(file, text) {
+  try {
+    fs.appendFileSync(file, text);
+  } catch {
+    /* even the log file can fail — never throw from logging */
+  }
+}
+const SHELL_LOG = path.join(os.tmpdir(), 'jarvis-shell.log');
+function slog(...args) {
+  const line = `${new Date().toISOString()} ${args.map(String).join(' ')}\n`;
+  safeAppend(SHELL_LOG, line);
+  try {
+    process.stdout.write(line);
+  } catch {
+    /* stdout may be a closed pipe — file log above is the source of truth */
+  }
+}
+process.on('uncaughtException', (err) => slog('[shell] uncaught:', err?.stack ?? err));
+process.on('unhandledRejection', (err) => slog('[shell] unhandled rejection:', err));
+
 let win = null;
 let tray = null;
 let quitting = false;
@@ -65,13 +90,18 @@ function agentHealthy(cb) {
 function wireChild(child, name) {
   child.jarvisName = name;
   children.push(child);
-  const log = fs.createWriteStream(path.join(os.tmpdir(), `jarvis-${name}.log`), { flags: 'a' });
-  child.stdout?.pipe(log);
-  child.stderr?.pipe(log);
+  // no .pipe(): a closed destination mid-write must never throw
+  const logFile = path.join(os.tmpdir(), `jarvis-${name}.log`);
+  const forward = (chunk) => safeAppend(logFile, chunk.toString());
+  child.stdout?.on('data', forward);
+  child.stderr?.on('data', forward);
+  child.stdout?.on('error', () => {});
+  child.stderr?.on('error', () => {});
+  child.on('error', (err) => slog(`[shell] ${name} spawn error:`, err));
   child.on('exit', (code) => {
     children = children.filter((c) => c !== child);
     if (!quitting && !restarting) {
-      console.log(`[shell] ${name} exited (${code}) — respawning in 3s`);
+      slog(`[shell] ${name} exited (${code}) — respawning in 3s`);
       setTimeout(() => spawnOne(name), 3000);
     }
   });
@@ -100,7 +130,7 @@ function spawnOne(name) {
 
 function spawnSidecars() {
   agentHealthy((up) => {
-    if (up) console.log('[shell] agent service already running — reusing it');
+    if (up) slog('[shell] agent service already running — reusing it');
     else spawnOne('agent');
     setTimeout(() => spawnOne('voice'), 1500);
   });
@@ -113,7 +143,7 @@ function spawnSidecars() {
     if (children.some((c) => c.jarvisName === 'agent')) return; // ours; exit-respawn covers it
     agentHealthy((up) => {
       if (!up && !quitting && !restarting && !children.some((c) => c.jarvisName === 'agent')) {
-        console.log('[shell] brain missing — spawning our own agent service');
+        slog('[shell] brain missing — spawning our own agent service');
         spawnOne('agent');
       }
     });
@@ -208,10 +238,10 @@ function createWindow() {
   });
 
   win.webContents.on('console-message', (_e, level, message) => {
-    if (level >= 2) console.log(`[renderer:${level}]`, message);
+    if (level >= 2) slog(`[renderer:${level}]`, message);
   });
   win.webContents.on('did-fail-load', (_e, code, desc, url) => {
-    console.log('[renderer] failed to load', code, desc, url);
+    slog('[renderer] failed to load', code, desc, url);
   });
 
   const distIndex = path.join(__dirname, 'dist', 'index.html');
