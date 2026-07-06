@@ -4,8 +4,8 @@
 # The Obsidian vault is personal data, not source code
 JARVIS VAULT/
 
-# Runtime state (event logs, SQLite)
-data/
+# Runtime state (event logs, SQLite) — root only; src data files stay tracked
+/data/
 
 # Dependencies & build output
 node_modules/
@@ -20,3 +20,7 @@ services/voice/models/
 .DS_Store
 *.log
 .claude/
+
+# CraftPix raw pack (licensed, no redistribution) — only used sheets are copied into the app
+craftpix-net-*/
+.DS_Store

@@ -324,5 +324,6 @@ window.jarvis?.onCommand((cmd) => {
   renderDetail();
   $('agentDetail').hidden = false;
 };
+(window as any).__jarvisOffice = office;
 
 render();
