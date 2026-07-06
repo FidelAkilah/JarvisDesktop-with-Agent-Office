@@ -24,3 +24,7 @@ services/voice/models/
 # CraftPix raw pack (licensed, no redistribution) — only used sheets are copied into the app
 craftpix-net-*/
 .DS_Store
+
+release/
+build/icon.iconset/
+home.json

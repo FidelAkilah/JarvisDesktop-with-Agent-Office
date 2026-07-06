@@ -23,13 +23,21 @@ live status: `JARVIS VAULT/JARVIS/System/NEXT_STEPS.md`.
    CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
    ```
 
-## Run it — the app (recommended)
+## Run it
+
+**Open `/Applications/JARVIS.app`** — that's it. It starts the brain and
+voice services itself, lives in the menu bar (◉), and starts at login if
+enabled in Settings (⚙ in the app header).
+
+Rebuild/reinstall the app after code changes:
 
 ```bash
 cd apps/desktop
 npm install          # first time only
-npm run app:prod     # builds the HUD and opens the JARVIS window
+npm run package      # → /Applications/JARVIS.app
 ```
+
+Or run unpackaged: `npm run app:prod`.
 
 The app starts both services itself (brain + voice), shows the arc-reactor
 HUD, and lives in the menu bar (◉). First run: click **Allow** on the

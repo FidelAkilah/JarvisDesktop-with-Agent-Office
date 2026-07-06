@@ -1,6 +1,6 @@
-/* JARVIS desktop shell: window + tray + global hotkeys + sidecar lifecycle.
- * The renderer (HUD) talks to the agent service directly over WebSocket;
- * this process only manages OS integration. */
+/* JARVIS desktop shell: window + tray + global hotkeys + sidecar lifecycle +
+ * settings. The renderer (HUD) talks to the agent service over WebSocket;
+ * this process owns OS integration and the .env-backed settings. */
 
 const {
   app,
@@ -8,6 +8,7 @@ const {
   Tray,
   Menu,
   globalShortcut,
+  ipcMain,
   systemPreferences,
   nativeImage,
 } = require('electron');
@@ -17,14 +18,29 @@ const fs = require('fs');
 const os = require('os');
 const http = require('http');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
+/* When packaged, Resources/app/home.json (baked by scripts/package-app.sh)
+ * points at the repo, where the sidecars and .env live. In dev, the repo is
+ * two directories up. */
+function resolveRepoRoot() {
+  try {
+    const baked = JSON.parse(fs.readFileSync(path.join(__dirname, 'home.json'), 'utf8'));
+    if (baked.repoRoot && fs.existsSync(baked.repoRoot)) return baked.repoRoot;
+  } catch {
+    /* dev mode */
+  }
+  return path.resolve(__dirname, '..', '..');
+}
+const REPO_ROOT = resolveRepoRoot();
+const ENV_PATH = path.join(REPO_ROOT, '.env');
 const DEV = !!process.env.JARVIS_DEV;
 const AGENT_PORT = 4777;
+
+const SETTING_KEYS = ['JARVIS_MODEL', 'JARVIS_WHISPER_MODEL', 'JARVIS_TTS_VOICE', 'JARVIS_WAKE_THRESHOLD'];
 
 let win = null;
 let tray = null;
 let quitting = false;
-const children = [];
+let children = [];
 
 // Only one JARVIS. A second launch focuses the existing window instead of
 // spawning a second app (and a second microphone).
@@ -36,7 +52,8 @@ app.on('second-instance', () => {
   win?.focus();
 });
 
-// ── sidecars ─────────────────────────────────────────────────────────
+/* ── sidecars ─────────────────────────────────────────────────────────── */
+
 function agentHealthy(cb) {
   http
     .get({ host: '127.0.0.1', port: AGENT_PORT, path: '/health', timeout: 1500 }, (res) =>
@@ -51,36 +68,115 @@ function wireChild(child, name) {
   child.stdout?.pipe(log);
   child.stderr?.pipe(log);
   child.on('exit', (code) => {
-    if (!quitting) console.log(`[shell] ${name} exited (${code})`);
+    children = children.filter((c) => c !== child);
+    if (!quitting && !restarting) {
+      console.log(`[shell] ${name} exited (${code}) — respawning in 3s`);
+      setTimeout(() => spawnOne(name), 3000);
+    }
   });
+}
+
+function spawnOne(name) {
+  if (quitting) return;
+  if (name === 'agent') {
+    const tsx = path.join(REPO_ROOT, 'services/agent/node_modules/.bin/tsx');
+    wireChild(
+      spawn(tsx, ['src/index.ts'], { cwd: path.join(REPO_ROOT, 'services/agent'), env: process.env }),
+      'agent',
+    );
+  } else if (name === 'voice') {
+    const uvHome = path.join(os.homedir(), '.local/bin/uv');
+    const uv = fs.existsSync(uvHome) ? uvHome : 'uv';
+    wireChild(
+      spawn(uv, ['run', 'python', '-m', 'jarvis_voice'], {
+        cwd: path.join(REPO_ROOT, 'services/voice'),
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      }),
+      'voice',
+    );
+  }
 }
 
 function spawnSidecars() {
   agentHealthy((up) => {
-    if (up) {
-      console.log('[shell] agent service already running — reusing it');
-    } else {
-      const tsx = path.join(REPO_ROOT, 'services/agent/node_modules/.bin/tsx');
-      const child = spawn(tsx, ['src/index.ts'], {
-        cwd: path.join(REPO_ROOT, 'services/agent'),
-        env: process.env,
-      });
-      wireChild(child, 'agent');
-    }
-    // Voice starts a beat later so the agent hub is accepting connections.
-    setTimeout(() => {
-      const uvHome = path.join(os.homedir(), '.local/bin/uv');
-      const uv = fs.existsSync(uvHome) ? uvHome : 'uv';
-      const child = spawn(uv, ['run', 'python', '-m', 'jarvis_voice'], {
-        cwd: path.join(REPO_ROOT, 'services/voice'),
-        env: process.env,
-      });
-      wireChild(child, 'voice');
-    }, 1500);
+    if (up) console.log('[shell] agent service already running — reusing it');
+    else spawnOne('agent');
+    setTimeout(() => spawnOne('voice'), 1500);
   });
 }
 
-// ── window ───────────────────────────────────────────────────────────
+let restarting = false;
+async function restartSidecars() {
+  restarting = true;
+  for (const c of children.splice(0)) {
+    try {
+      c.kill();
+    } catch {
+      /* already gone */
+    }
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+  restarting = false;
+  spawnOne('agent');
+  setTimeout(() => spawnOne('voice'), 2500);
+}
+
+/* ── settings (.env-backed) ──────────────────────────────────────────── */
+
+function readEnv() {
+  const out = {};
+  try {
+    for (const line of fs.readFileSync(ENV_PATH, 'utf8').split('\n')) {
+      const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
+      if (m) out[m[1]] = m[2];
+    }
+  } catch {
+    /* missing .env */
+  }
+  return out;
+}
+
+function writeEnvValues(values) {
+  let text = '';
+  try {
+    text = fs.readFileSync(ENV_PATH, 'utf8');
+  } catch {
+    /* create fresh */
+  }
+  for (const [key, val] of Object.entries(values)) {
+    if (!SETTING_KEYS.includes(key)) continue;
+    const line = `${key}=${val}`;
+    const re = new RegExp(`^${key}=.*$`, 'm');
+    text = re.test(text) ? text.replace(re, line) : text + `\n${line}\n`;
+  }
+  fs.writeFileSync(ENV_PATH, text);
+}
+
+ipcMain.handle('jarvis-get-settings', () => {
+  const env = readEnv();
+  return {
+    values: Object.fromEntries(SETTING_KEYS.map((k) => [k, env[k] ?? ''])),
+    packaged: app.isPackaged,
+    openAtLogin: app.getLoginItemSettings().openAtLogin,
+    micStatus: systemPreferences.getMediaAccessStatus('microphone'),
+  };
+});
+
+ipcMain.handle('jarvis-apply-settings', async (_e, payload) => {
+  try {
+    writeEnvValues(payload.values ?? {});
+    if (app.isPackaged && typeof payload.openAtLogin === 'boolean') {
+      app.setLoginItemSettings({ openAtLogin: payload.openAtLogin });
+    }
+    await restartSidecars();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/* ── window ───────────────────────────────────────────────────────────── */
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1440,
@@ -96,8 +192,6 @@ function createWindow() {
     },
   });
 
-  // Surface renderer problems in the shell log — invaluable when the window
-  // renders blank/unstyled.
   win.webContents.on('console-message', (_e, level, message) => {
     if (level >= 2) console.log(`[renderer:${level}]`, message);
   });
@@ -134,12 +228,22 @@ function toggleWindow() {
   }
 }
 
-// ── app lifecycle ────────────────────────────────────────────────────
+/* ── app lifecycle ────────────────────────────────────────────────────── */
+
 app.whenReady().then(async () => {
   try {
     await systemPreferences.askForMediaAccess('microphone');
   } catch {
-    /* prompt declined — voice will simply hear nothing; HUD still works */
+    /* declined — HUD settings shows the status */
+  }
+
+  if (!app.isPackaged) {
+    // dev runs get the reactor icon in the dock too
+    try {
+      app.dock?.setIcon(path.join(__dirname, 'build', 'icon.png'));
+    } catch {
+      /* icon not generated yet */
+    }
   }
 
   createWindow();

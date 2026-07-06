@@ -1,17 +1,19 @@
 {
   "name": "@jarvis/desktop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "main": "main.cjs",
-  "description": "JARVIS desktop shell — Electron window hosting the HUD",
+  "description": "JARVIS desktop shell \u2014 Electron window hosting the HUD",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "app": "JARVIS_DEV=1 electron .",
-    "app:prod": "vite build && electron ."
+    "app:prod": "vite build && electron .",
+    "package": "bash scripts/package-app.sh"
   },
   "devDependencies": {
+    "@electron/packager": "^20.0.2",
     "electron": "^33.0.0",
     "typescript": "^5.6.0",
     "vite": "^6.0.0"

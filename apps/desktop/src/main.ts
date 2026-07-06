@@ -3,9 +3,20 @@
 import { Reactor, type CoreState } from './reactor';
 import { Office } from './office/office';
 
+interface SettingsInfo {
+  values: Record<string, string>;
+  packaged: boolean;
+  openAtLogin: boolean;
+  micStatus: string;
+}
+
 declare global {
   interface Window {
-    jarvis?: { onCommand: (cb: (cmd: string) => void) => void };
+    jarvis?: {
+      onCommand: (cb: (cmd: string) => void) => void;
+      getSettings?: () => Promise<SettingsInfo>;
+      applySettings?: (p: { values: Record<string, string>; openAtLogin: boolean }) => Promise<{ ok: boolean; error?: string }>;
+    };
   }
 }
 
@@ -309,6 +320,62 @@ $('chatForm').addEventListener('submit', (e) => {
 
 muteBtn.addEventListener('click', () => send({ type: 'voice_cmd', cmd: 'toggle_mute' }));
 pttBtn.addEventListener('click', () => send({ type: 'voice_cmd', cmd: 'ptt' }));
+
+/* ── settings panel ───────────────────────────────────────────────────── */
+const overlay = $('settingsOverlay');
+const sWake = $('sWake') as HTMLInputElement;
+const sWakeVal = $('sWakeVal');
+sWake.addEventListener('input', () => (sWakeVal.textContent = sWake.value));
+
+$('settingsBtn').addEventListener('click', async () => {
+  if (!window.jarvis?.getSettings) {
+    $('sStatus').textContent = '';
+    overlay.hidden = false;
+    $('sMic').textContent = 'Settings need the desktop app (not the browser preview).';
+    return;
+  }
+  const info = await window.jarvis.getSettings();
+  ($('sModel') as HTMLSelectElement).value = info.values.JARVIS_MODEL || 'claude-opus-4-8';
+  ($('sWhisper') as HTMLSelectElement).value = info.values.JARVIS_WHISPER_MODEL || 'base';
+  ($('sVoice') as HTMLInputElement).value = info.values.JARVIS_TTS_VOICE || 'en_GB-alan-medium';
+  sWake.value = info.values.JARVIS_WAKE_THRESHOLD || '0.5';
+  sWakeVal.textContent = sWake.value;
+  const login = $('sLogin') as HTMLInputElement;
+  login.checked = info.openAtLogin;
+  login.disabled = !info.packaged;
+  $('sMic').textContent =
+    info.micStatus === 'granted'
+      ? 'Microphone: granted ✓'
+      : `Microphone: ${info.micStatus} — enable in System Settings → Privacy & Security → Microphone`;
+  $('sStatus').textContent = '';
+  overlay.hidden = false;
+});
+
+$('sCancel').addEventListener('click', () => (overlay.hidden = true));
+overlay.addEventListener('click', (e) => {
+  if (e.target === overlay) overlay.hidden = true;
+});
+
+$('sApply').addEventListener('click', async () => {
+  if (!window.jarvis?.applySettings) return;
+  $('sStatus').textContent = 'Applying — restarting services…';
+  const res = await window.jarvis.applySettings({
+    values: {
+      JARVIS_MODEL: ($('sModel') as HTMLSelectElement).value,
+      JARVIS_WHISPER_MODEL: ($('sWhisper') as HTMLSelectElement).value,
+      JARVIS_TTS_VOICE: ($('sVoice') as HTMLInputElement).value,
+      JARVIS_WAKE_THRESHOLD: sWake.value,
+    },
+    openAtLogin: ($('sLogin') as HTMLInputElement).checked,
+  });
+  if (res.ok) {
+    $('sStatus').textContent = 'Done — services restarting, link will resume in a few seconds.';
+    setTimeout(() => (overlay.hidden = true), 1800);
+  } else {
+    $('sStatus').className = 's-note err';
+    $('sStatus').textContent = res.error ?? 'Failed to apply.';
+  }
+});
 
 // Global hotkeys arrive from the Electron main process
 window.jarvis?.onCommand((cmd) => {
