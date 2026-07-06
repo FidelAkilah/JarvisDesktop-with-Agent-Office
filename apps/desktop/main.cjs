@@ -63,6 +63,7 @@ function agentHealthy(cb) {
 }
 
 function wireChild(child, name) {
+  child.jarvisName = name;
   children.push(child);
   const log = fs.createWriteStream(path.join(os.tmpdir(), `jarvis-${name}.log`), { flags: 'a' });
   child.stdout?.pipe(log);
@@ -103,6 +104,20 @@ function spawnSidecars() {
     else spawnOne('agent');
     setTimeout(() => spawnOne('voice'), 1500);
   });
+
+  // Watchdog: a reused (externally started) brain can die without us owning
+  // it — e.g. a macOS user switch killing the dev process. Health-check every
+  // 15 s and take over whenever the brain is missing.
+  setInterval(() => {
+    if (quitting || restarting) return;
+    if (children.some((c) => c.jarvisName === 'agent')) return; // ours; exit-respawn covers it
+    agentHealthy((up) => {
+      if (!up && !quitting && !restarting && !children.some((c) => c.jarvisName === 'agent')) {
+        console.log('[shell] brain missing — spawning our own agent service');
+        spawnOne('agent');
+      }
+    });
+  }, 15_000);
 }
 
 let restarting = false;
