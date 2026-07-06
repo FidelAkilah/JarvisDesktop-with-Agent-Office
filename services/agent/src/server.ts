@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { CONFIG, REPO_ROOT } from './env.js';
 import { createBrain } from './brain/index.js';
+import { getVaultIndex } from './vault/indexer.js';
 import type { JarvisEvent, NewEvent } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +35,25 @@ function logTaskToVault(userText: string, reply: string, events: JarvisEvent[]):
     fs.appendFileSync(file, header + entry);
   } catch {
     /* task notes are best-effort — never break a turn over them */
+  }
+}
+
+/** Every conversation turn lands in the vault's Daily log — JARVIS's diary,
+ * which the memory index picks up automatically. */
+function logDaily(userText: string, reply: string, channel: string): void {
+  try {
+    const dir = path.join(CONFIG.vaultPath, 'Daily');
+    fs.mkdirSync(dir, { recursive: true });
+    const d = new Date();
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const file = path.join(dir, `${day}.md`);
+    const header = fs.existsSync(file) ? '' : `# ${day} — conversation log\n`;
+    const entry =
+      `\n**${d.toTimeString().slice(0, 5)}** (${channel}) — Fidel: ${userText.replace(/\n/g, ' ').slice(0, 300)}\n` +
+      `> JARVIS: ${reply.replace(/\n/g, ' ').slice(0, 300)}\n`;
+    fs.appendFileSync(file, header + entry);
+  } catch {
+    /* diary is best-effort */
   }
 }
 
@@ -165,6 +185,7 @@ export function startServer(): http.Server {
             broadcast(JSON.stringify({ type: 'assistant_delta', sessionId, text: t })),
         });
         logTaskToVault(msg.text, reply, turnEvents);
+        logDaily(msg.text, reply, channel);
         emit({
           source: 'orchestrator',
           agentId: 'jarvis',
@@ -196,6 +217,8 @@ export function startServer(): http.Server {
     );
     // Pre-spawn the voice session so the first spoken question pays no boot cost.
     (brain as { warm?: (id: string) => void }).warm?.('voice');
+    // Build the vault memory index in the background (non-blocking).
+    void getVaultIndex().init();
   });
 
   return server;

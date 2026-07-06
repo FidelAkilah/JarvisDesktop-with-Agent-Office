@@ -1,9 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  createSdkMcpServer,
+  query,
+  tool,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 import { CONFIG, REPO_ROOT } from '../env.js';
+import { getVaultIndex } from '../vault/indexer.js';
 import type { BrainProvider, ChatInput } from './BrainProvider.js';
 import type { Activity, NewEvent } from '../events.js';
+
+/* semantic memory search, exposed to the orchestrator and all subagents */
+const vaultMcp = createSdkMcpServer({
+  name: 'vault',
+  tools: [
+    tool(
+      'vault_search',
+      "Semantic search over JARVIS's Obsidian vault memory (Memory/, Daily/, Tasks/, Context/, System/). Returns the most relevant note excerpts with their vault paths.",
+      { query: z.string().describe('what to look for, in natural language') },
+      async ({ query: q }) => {
+        const hits = await getVaultIndex().search(q, 6, 0.25);
+        const text = hits.length
+          ? hits
+              .map((h) => `[${h.file} › ${h.heading}] (relevance ${h.score.toFixed(2)})\n${h.text}`)
+              .join('\n\n')
+          : 'No relevant notes found.';
+        return { content: [{ type: 'text', text }] };
+      },
+    ),
+  ],
+});
 
 /* ── personas live in the vault (JARVIS/Agents/*.md) — editing a note
       changes the agent on the next session spawn ─────────────────────── */
@@ -39,7 +67,14 @@ Operational context (from the JARVIS runtime, not editable prose):
 - Personal notes elsewhere in the vault and the repo .env file are protected;
   writes there will be denied by the runtime.
 - The user often speaks by voice; when the message says so, keep replies short
-  and speakable.`;
+  and speakable.
+- MEMORY: relevant vault notes are auto-recalled into your context each
+  message — when you use one, mention the note naturally (e.g. "per your
+  Memory note…"). For deeper lookups use the vault_search tool. When you
+  learn a durable fact about Fidel, his projects, or his preferences, save or
+  update a note under Memory/ (one topic per note, directly or via the
+  vault-librarian) — without being asked. Conversation logs are written to
+  Daily/ automatically; never duplicate them by hand.`;
 }
 
 /* ── tool → activity mapping (drives the HUD + pixel office) ─────────── */
@@ -50,6 +85,7 @@ function describeTool(name: string, input: any): { activity?: Activity; target?:
   );
   const target = raw.length > 90 ? raw.slice(0, 87) + '…' : raw || undefined;
   const inVault = raw.includes('JARVIS VAULT');
+  if (name.startsWith('mcp__vault__')) return { activity: 'vault_read', target };
   switch (name) {
     case 'Write':
     case 'Edit':
@@ -133,8 +169,13 @@ class PersistentSession {
         cwd: REPO_ROOT,
         systemPrompt: loadAgentNote('orchestrator', FALLBACK_ORCHESTRATOR) + operationalCore(),
         includePartialMessages: true,
-        // Reads and research are auto-approved; writes/bash go through guardTool.
-        allowedTools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Agent', 'TodoWrite'],
+        mcpServers: { vault: vaultMcp },
+        // Reads, research, and memory search are auto-approved; writes/bash go
+        // through guardTool.
+        allowedTools: [
+          'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Agent', 'TodoWrite',
+          'mcp__vault__vault_search',
+        ],
         canUseTool: async (toolName: string, input: Record<string, unknown>) =>
           guardTool(toolName, input),
         agents: {
@@ -142,19 +183,19 @@ class PersistentSession {
             description:
               'Web research specialist — investigates questions online and reports verified findings with sources.',
             prompt: loadAgentNote('researcher', 'You research questions on the web and report verified findings with sources.'),
-            tools: ['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep'],
+            tools: ['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep', 'mcp__vault__vault_search'],
           },
           coder: {
             description:
               'Software specialist — writes, edits, and runs code and shell commands, verifying results.',
             prompt: loadAgentNote('coder', 'You write, edit and run code in small verified steps.'),
-            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
+            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__vault__vault_search'],
           },
           'vault-librarian': {
             description:
               "Keeper of the Obsidian vault — reads, writes, and organises notes inside the vault's JARVIS folder only.",
             prompt: loadAgentNote('vault-librarian', 'You manage the Obsidian vault, writing only inside the JARVIS folder.'),
-            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+            tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'mcp__vault__vault_search'],
           },
         },
       },
@@ -368,11 +409,28 @@ export class AgentSdkProvider implements BrainProvider {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
       hour: '2-digit', minute: '2-digit',
     });
+
+    // auto-recall: quietly attach the most relevant vault memories
+    let recall = '';
+    try {
+      const hits = await getVaultIndex().search(text, 3, 0.35);
+      if (hits.length) {
+        recall =
+          ' Auto-recalled vault memories (use only if relevant, mention the note when you do): ' +
+          hits
+            .map((h) => `«${h.file} › ${h.heading}: ${h.text.slice(0, 350).replace(/\n+/g, ' ')}»`)
+            .join(' ');
+      }
+    } catch {
+      /* recall is best-effort */
+    }
+
     const contextNote =
       `\n\n[Context, not written by the user: current local time is ${now}.` +
       (channel === 'voice'
         ? ' The user is speaking by voice and your reply will be read aloud — keep it to a sentence or two of plain speakable prose, no markdown, no lists. If you used tools, briefly confirm what you actually did.'
         : '') +
+      recall +
       ']';
 
     try {
