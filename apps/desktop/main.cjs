@@ -109,10 +109,17 @@ function wireChild(child, name) {
 
 function spawnOne(name) {
   if (quitting) return;
+  if (children.some((c) => c.jarvisName === name)) return; // never double-spawn
   if (name === 'agent') {
-    const tsx = path.join(REPO_ROOT, 'services/agent/node_modules/.bin/tsx');
+    // Finder-launched apps get a bare PATH with no `node` — so don't need one:
+    // Electron's own binary IS Node when ELECTRON_RUN_AS_NODE is set. Run the
+    // tsx JS entry directly (its bin wrapper needs `env node`, which fails).
+    const tsxCli = path.join(REPO_ROOT, 'services/agent/node_modules/tsx/dist/cli.mjs');
     wireChild(
-      spawn(tsx, ['src/index.ts'], { cwd: path.join(REPO_ROOT, 'services/agent'), env: process.env }),
+      spawn(process.execPath, [tsxCli, 'src/index.ts'], {
+        cwd: path.join(REPO_ROOT, 'services/agent'),
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      }),
       'agent',
     );
   } else if (name === 'voice') {
